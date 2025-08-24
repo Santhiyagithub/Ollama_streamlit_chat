@@ -42,3 +42,13 @@ A streamlit web app that lets us chat with ollama LLM (like llama3.1:8b) running
   ```bash
   streamlit run app.py
   ```
+---
+
+## Usage
+
+- Type your message in the text box.
+- Get a response from the local Ollama model.
+- Example models you can use:
+   llama3.1:8b
+   llama2:7b
+   mistral
