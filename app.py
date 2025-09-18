@@ -1,69 +1,105 @@
 import streamlit as st
 import requests
+import fitz  # PyMuPDF
+import json
 
-# Constants
+# -------------------- CONFIG --------------------
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "llama3.1:8b"
+MODEL_NAME = "llama3.2:1b"  # ✅ light model that fits low-RAM systems
 
-# Streamlit Page Config
-st.set_page_config(page_title="Ollama Chatbot", layout="wide")
-
-# Sidebar for settings
-st.sidebar.title("⚙️ Model Settings")
-temperature = st.sidebar.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
-max_tokens = st.sidebar.slider("Max Tokens", 50, 1000, 300, 50)
-
-# Title
-st.title("💬 Chat with Ollama (LLaMA 3.1 - 8B)")
-st.write("This chatbot runs locally using **Ollama**. Type below to chat!")
-
-# Initialize chat history in session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display chat history
-for message in st.session_state.messages:
-    role = "🧑 You" if message["role"] == "user" else "🤖 AI"
-    with st.chat_message(message["role"]):
-        st.markdown(f"**{role}:** {message['content']}")
-
-# Input field
-user_input = st.chat_input("Type your message...")
-
-if user_input:
-    # Append user message to chat history
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(f"**🧑 You:** {user_input}")
-
-    # Call Ollama API
+# -------------------- FUNCTIONS --------------------
+def query_ollama(prompt, temperature=0.7, max_tokens=300):
+    """Send a prompt to Ollama API and return the response."""
     try:
         response = requests.post(
             OLLAMA_URL,
             json={
                 "model": MODEL_NAME,
-                "prompt": user_input,
+                "prompt": prompt,
                 "temperature": temperature,
-                "max_tokens": max_tokens
+                "max_tokens": max_tokens,
             },
-            stream=True
+            stream=True,
+            timeout=120,
         )
 
-        # Collect response
         result = ""
         for line in response.iter_lines():
             if line:
-                data = line.decode("utf-8")
-                if '"response":"' in data:
-                    text_piece = data.split('"response":"')[-1].split('"')[0]
-                    result += text_piece
-
-        # Append AI response to history
-        st.session_state.messages.append({"role": "assistant", "content": result})
-
-        # Display AI response
-        with st.chat_message("assistant"):
-            st.markdown(f"**🤖 AI:** {result}")
-
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                    if "response" in data:
+                        result += data["response"]
+                except Exception:
+                    continue
+        return result.strip() if result else "⚠️ No response received from model."
     except Exception as e:
-        st.error(f"Error: {e}")
+        return f"❌ Error connecting to Ollama: {e}"
+
+def extract_text_from_pdf(uploaded_file):
+    """Extract text from uploaded PDF file safely."""
+    try:
+        file_bytes = uploaded_file.read()
+        pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+        text = ""
+        for page_num in range(len(pdf_document)):
+            text += pdf_document[page_num].get_text()
+        return text.strip()
+    except Exception as e:
+        return f"❌ Could not read PDF: {e}"
+
+# -------------------- STREAMLIT UI --------------------
+st.set_page_config(page_title="Ollama Chatbot", layout="wide")
+st.title("💬 Local AI Chatbot (Ollama + Streamlit)")
+st.caption("⚡ Powered by LLaMA running locally via Ollama")
+
+# Sidebar: Settings & Upload
+st.sidebar.header("⚙️ Settings")
+temperature = st.sidebar.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
+max_tokens = st.sidebar.slider("Max Tokens", 50, 1000, 300, 50)
+
+st.sidebar.header("📂 Knowledge Source")
+uploaded_file = st.sidebar.file_uploader("Upload a PDF", type=["pdf"])
+pdf_context = ""
+if uploaded_file:
+    pdf_context = extract_text_from_pdf(uploaded_file)
+    if pdf_context.startswith("❌"):
+        st.sidebar.error(pdf_context)
+    else:
+        st.sidebar.success("✅ PDF Loaded")
+
+# Sidebar: Chat Controls
+if st.sidebar.button("🆕 New Chat"):
+    st.session_state.messages = []
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# -------------------- CHAT UI --------------------
+for message in st.session_state.messages:
+    role = "🧑 You" if message["role"] == "user" else "🤖 AI"
+    with st.chat_message(message["role"]):
+        st.markdown(f"**{role}:** {message['content']}")
+
+# User Input
+user_input = st.chat_input("Type your message...")
+
+if user_input:
+    # Add user message
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(f"**🧑 You:** {user_input}")
+
+    # Combine with PDF context if available
+    final_prompt = user_input
+    if pdf_context and not pdf_context.startswith("❌"):
+        final_prompt = f"Use the following document to answer:\n\n{pdf_context}\n\nQuestion: {user_input}"
+
+    # Get AI response
+    with st.chat_message("assistant"):
+        with st.spinner("🤖 Thinking..."):
+            ai_response = query_ollama(final_prompt, temperature, max_tokens)
+            st.markdown(f"**🤖 AI:** {ai_response}")
+
+    # Save to history
+    st.session_state.messages.append({"role": "assistant", "content": ai_response})
